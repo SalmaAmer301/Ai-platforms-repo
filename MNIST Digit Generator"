@@ -1,0 +1,138 @@
+# --- Install Dependencies (Optional, if needed) ---
+# !pip install torch torchvision
+
+# --- Import Libraries ---
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader
+import os
+
+# --- Check GPU Availability ---
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f"Using device: {device}")
+
+# --- Hyperparameters ---
+z_dim = 100            # Dimension of noise vector
+batch_size = 128       # Batch size
+epochs = 50            # Number of training epochs
+lr = 0.0002            # Learning rate
+
+# --- Data Preparation ---
+transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.5,), (0.5,))  # Normalize MNIST images to [-1, 1]
+])
+
+# Download and load the MNIST dataset
+train_data = datasets.MNIST(root='./data', train=True, download=True, transform=transform)
+train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True)
+
+# --- Generator ---
+class Generator(nn.Module):
+    def __init__(self, z_dim):
+        super(Generator, self).__init__()
+        self.model = nn.Sequential(
+            nn.Linear(z_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, 512),
+            nn.ReLU(),
+            nn.Linear(512, 28*28),
+            nn.Tanh()  # Output range [-1, 1] to match normalized data
+        )
+
+    def forward(self, z):
+        return self.model(z).view(-1, 1, 28, 28)
+
+# --- Discriminator ---
+class Discriminator(nn.Module):
+    def __init__(self):
+        super(Discriminator, self).__init__()
+        self.model = nn.Sequential(
+            nn.Linear(28*28, 512),
+            nn.ReLU(),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Linear(256, 1),
+            nn.Sigmoid()  # Output probability [0, 1]
+        )
+
+    def forward(self, x):
+        return self.model(x.view(-1, 28*28))
+
+# --- Initialize Generator and Discriminator ---
+G = Generator(z_dim).to(device)
+D = Discriminator().to(device)
+
+# --- Loss and Optimizers ---
+criterion = nn.BCELoss()  # Binary Cross-Entropy Loss
+optimizer_G = optim.Adam(G.parameters(), lr=lr)
+optimizer_D = optim.Adam(D.parameters(), lr=lr)
+
+# --- Training Loop ---
+print("Starting Training...")
+for epoch in range(epochs):
+    for real_images, _ in train_loader:
+        real_images = real_images.to(device)  # Real data
+        batch_size = real_images.size(0)
+
+        # Labels
+        real_labels = torch.ones(batch_size, 1).to(device)  # Real images label = 1
+        fake_labels = torch.zeros(batch_size, 1).to(device)  # Fake images label = 0
+
+        # --- Train Discriminator ---
+        # Real images
+        outputs_real = D(real_images)
+        d_loss_real = criterion(outputs_real, real_labels)
+
+        # Fake images
+        z = torch.randn(batch_size, z_dim).to(device)  # Noise
+        fake_images = G(z)
+        outputs_fake = D(fake_images.detach())  # Detach G to prevent gradient update
+        d_loss_fake = criterion(outputs_fake, fake_labels)
+
+        # Total Discriminator Loss
+        d_loss = d_loss_real + d_loss_fake
+        optimizer_D.zero_grad()
+        d_loss.backward()
+        optimizer_D.step()
+
+        # --- Train Generator ---
+        z = torch.randn(batch_size, z_dim).to(device)  # Noise
+        fake_images = G(z)
+        outputs = D(fake_images)
+        g_loss = criterion(outputs, real_labels)  # Fool discriminator
+
+        optimizer_G.zero_grad()
+        g_loss.backward()
+        optimizer_G.step()
+
+    # Print progress after each epoch
+    print(f"Epoch [{epoch+1}/{epochs}], D Loss: {d_loss.item():.4f}, G Loss: {g_loss.item():.4f}")
+
+# --- Save Models to Colab Directory ---
+output_dir = './model_checkpoints'
+os.makedirs(output_dir, exist_ok=True)
+torch.save(G.state_dict(), os.path.join(output_dir, 'generator.pth'))
+torch.save(D.state_dict(), os.path.join(output_dir, 'discriminator.pth'))
+print("Training Complete. Models saved successfully.")
+
+# --- Generate and Visualize Fake Images ---
+import matplotlib.pyplot as plt
+
+def generate_and_plot_images(G, z_dim, num_images=10):
+    G.eval()  # Set Generator to evaluation mode
+    with torch.no_grad():
+        z = torch.randn(num_images, z_dim).to(device)  # Random noise
+        fake_images = G(z).cpu().numpy()  # Generate fake images
+    
+    # Plot generated images
+    fig, axes = plt.subplots(1, num_images, figsize=(15, 2))
+    for i in range(num_images):
+        axes[i].imshow(fake_images[i][0], cmap='gray')
+        axes[i].axis('off')
+    plt.show()
+
+# Generate and visualize some fake images
+generate_and_plot_images(G, z_dim)
